@@ -16,7 +16,7 @@ requirements.txt
 ধাপ ২ — Vercel Deploy
 vercel.com → Add New Project → GitHub repo select করুন → Environment Variables যোগ করুন:
 
-# Variable	Value
+# Variable ও	Value
 
 SECRET_KEY হলো nu-scraper-secret-2026
 
