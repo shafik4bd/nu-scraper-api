@@ -1,13 +1,16 @@
 from http.server import BaseHTTPRequestHandler
 import requests
+import urllib3
 from bs4 import BeautifulSoup
 import json
 import os
-import hmac
-import hashlib
+
+# SSL warning বন্ধ করো
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SECRET_KEY = os.environ.get('SECRET_KEY', 'nu-scraper-secret-2026')
-WP_URL     = os.environ.get('WP_URL', '')  # আপনার WordPress site URL
+WP_URL     = os.environ.get('WP_URL', '')
+
 
 def scrape_notices():
     headers = {
@@ -20,7 +23,8 @@ def scrape_notices():
     resp = requests.get(
         'https://www.nu.ac.bd/recent-news-notice.php',
         headers=headers,
-        timeout=30
+        timeout=30,
+        verify=False  # SSL verify বন্ধ
     )
     resp.encoding = 'utf-8'
 
@@ -28,7 +32,7 @@ def scrape_notices():
     table = soup.find('table', {'id': 'myTable'})
 
     if not table:
-        return []
+        return [], 'Table #myTable not found in HTML'
 
     notices = []
     rows = table.find_all('tr')[1:]  # header skip
@@ -46,7 +50,7 @@ def scrape_notices():
         # Date
         date = cols[2].get_text(strip=True)
 
-        # PDF link — last column or title column
+        # PDF link
         pdf_url = ''
         for col in reversed(cols):
             a = col.find('a', href=True)
@@ -60,71 +64,76 @@ def scrape_notices():
             continue
 
         notices.append({
-            'title':    title,
-            'date':     date,
-            'pdf_url':  pdf_url,
+            'title':   title,
+            'date':    date,
+            'pdf_url': pdf_url,
         })
 
-    return notices
+    return notices, None
 
 
 def push_to_wordpress(notices):
     if not WP_URL:
-        return {'error': 'WP_URL not set'}
+        return {'error': 'WP_URL not configured'}
 
     endpoint = WP_URL.rstrip('/') + '/wp-json/nu-scraper/v1/push'
 
-    resp = requests.post(
-        endpoint,
-        json={'notices': notices, 'secret': SECRET_KEY},
-        headers={'Content-Type': 'application/json'},
-        timeout=30
-    )
-    return resp.json()
+    try:
+        resp = requests.post(
+            endpoint,
+            json={'notices': notices, 'secret': SECRET_KEY},
+            headers={'Content-Type': 'application/json'},
+            timeout=30,
+            verify=False
+        )
+        return resp.json()
+    except Exception as e:
+        return {'error': str(e)}
 
 
 class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            # Secret key check
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
             key = params.get('key', [''])[0]
 
+            # Secret key check
             if key != SECRET_KEY:
-                self.send_response(401)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({'error': 'Unauthorized'}).encode())
+                self._respond(401, {'error': 'Unauthorized — add ?key=YOUR_SECRET_KEY'})
                 return
 
             # Scrape
-            notices = scrape_notices()
+            notices, err = scrape_notices()
+
+            if err:
+                self._respond(500, {'error': err, 'total': 0})
+                return
 
             # Push to WordPress
             wp_result = {}
             if WP_URL and notices:
                 wp_result = push_to_wordpress(notices)
 
-            result = {
-                'success': True,
-                'total':   len(notices),
-                'notices': notices[:5],  # preview only
-                'wp_push': wp_result,
-            }
-
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+            self._respond(200, {
+                'success':  True,
+                'total':    len(notices),
+                'preview':  notices[:3],
+                'wp_push':  wp_result,
+            })
 
         except Exception as e:
-            self.send_response(500)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': str(e)}).encode())
+            self._respond(500, {'error': str(e)})
+
+    def _respond(self, code, data):
+        body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Content-Length', len(body))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format, *args):
         pass
