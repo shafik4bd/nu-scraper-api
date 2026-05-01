@@ -15,11 +15,5 @@
       "src": "/",
       "dest": "/api/scrape.py"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/scrape?key=nu-scraper-secret-2026",
-      "schedule": "*/5 * * * *"
-    }
   ]
 }
