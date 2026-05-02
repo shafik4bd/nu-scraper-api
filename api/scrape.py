@@ -5,7 +5,6 @@ from bs4 import BeautifulSoup
 import json
 import os
 
-# SSL warning বন্ধ করো
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SECRET_KEY = os.environ.get('SECRET_KEY', 'nu-scraper-secret-2026')
@@ -19,38 +18,35 @@ def scrape_notices():
         'Accept-Language': 'bn-BD,bn;q=0.9,en;q=0.8',
         'Referer': 'https://www.nu.ac.bd/',
     }
-
     resp = requests.get(
         'https://www.nu.ac.bd/recent-news-notice.php',
-        headers=headers,
-        timeout=30,
-        verify=False  # SSL verify বন্ধ
+        headers=headers, timeout=30, verify=False
     )
     resp.encoding = 'utf-8'
 
-    soup = BeautifulSoup(resp.text, 'html.parser')
+    soup  = BeautifulSoup(resp.text, 'html.parser')
     table = soup.find('table', {'id': 'myTable'})
-
     if not table:
-        return [], 'Table #myTable not found in HTML'
+        return [], 'Table #myTable not found'
 
     notices = []
-    rows = table.find_all('tr')[1:]  # header skip
-
-    for row in rows:
+    for row in table.find_all('tr')[1:]:
         cols = row.find_all('td')
         if len(cols) < 3:
             continue
 
-        # Title
+        # col[0] = nu.ac.bd serial number
+        try:
+            serial = int(cols[0].get_text(strip=True))
+        except:
+            continue
+
         title = cols[1].get_text(separator=' ', strip=True)
         if not title or len(title) < 3:
             continue
 
-        # Date
         date = cols[2].get_text(strip=True)
 
-        # PDF link
         pdf_url = ''
         for col in reversed(cols):
             a = col.find('a', href=True)
@@ -64,6 +60,7 @@ def scrape_notices():
             continue
 
         notices.append({
+            'serial':  serial,
             'title':   title,
             'date':    date,
             'pdf_url': pdf_url,
@@ -75,16 +72,13 @@ def scrape_notices():
 def push_to_wordpress(notices):
     if not WP_URL:
         return {'error': 'WP_URL not configured'}
-
     endpoint = WP_URL.rstrip('/') + '/wp-json/nu-scraper/v1/push'
-
     try:
         resp = requests.post(
             endpoint,
             json={'notices': notices, 'secret': SECRET_KEY},
             headers={'Content-Type': 'application/json'},
-            timeout=30,
-            verify=False
+            timeout=60, verify=False
         )
         return resp.json()
     except Exception as e:
@@ -99,30 +93,25 @@ class handler(BaseHTTPRequestHandler):
             params = parse_qs(urlparse(self.path).query)
             key = params.get('key', [''])[0]
 
-            # Secret key check
             if key != SECRET_KEY:
-                self._respond(401, {'error': 'Unauthorized — add ?key=YOUR_SECRET_KEY'})
+                self._respond(401, {'error': 'Unauthorized'})
                 return
 
-            # Scrape
             notices, err = scrape_notices()
-
             if err:
                 self._respond(500, {'error': err, 'total': 0})
                 return
 
-            # Push to WordPress
             wp_result = {}
             if WP_URL and notices:
                 wp_result = push_to_wordpress(notices)
 
             self._respond(200, {
-                'success':  True,
-                'total':    len(notices),
-                'preview':  notices[:3],
-                'wp_push':  wp_result,
+                'success': True,
+                'total':   len(notices),
+                'preview': notices[:3],
+                'wp_push': wp_result,
             })
-
         except Exception as e:
             self._respond(500, {'error': str(e)})
 
